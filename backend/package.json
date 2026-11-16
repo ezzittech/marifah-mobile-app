@@ -1,0 +1,15 @@
+{
+  "name": "marifah-api",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Marifah app gateway: auth + Odoo (finance/Billplz) + Fedena adapter",
+  "type": "module",
+  "engines": { "node": ">=22.13" },
+  "scripts": {
+    "start": "node --env-file=.env src/server.js",
+    "dev": "node --watch --env-file=.env src/server.js",
+    "test": "node --test test/*.test.js",
+    "create-user": "node --env-file=.env scripts/create-user.js",
+    "import-students": "node --env-file=.env scripts/import-students.js"
+  }
+}

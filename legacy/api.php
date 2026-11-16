@@ -11,8 +11,8 @@ if ($_SERVER['REQUEST_METHOD'] == 'OPTIONS') { http_response_code(200); exit; }
 
 define('ODOO_URL',  'https://portal.marifah.edu.my');
 define('ODOO_DB',   'Marifahdb');
-define('ODOO_USER', 'ezzittech@gmail.com');
-define('ODOO_PASS', 'Abulez@2526');
+define('ODOO_USER', getenv('ODOO_USER') ?: '');
+define('ODOO_PASS', getenv('ODOO_PASS') ?: '');
 $SID = null;
 
 function odoo_post(string $path, array $payload): array {
