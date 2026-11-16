@@ -1,0 +1,1588 @@
+### هيكل مجلدات المشروع (Project Tree) ###
+
+edlnd/
+    api.php
+    index.html
+    backend/
+        config.php
+        index.php
+        controllers/
+            AuthController.php
+            FinanceController.php
+            PaymentController.php
+        core/
+            OdooClient.php
+    frontend/
+        index.html
+        manifest.json
+        sw.js
+        assets/
+            icons/
+            lottie/
+        css/
+            components.css
+            main.css
+            screens.css
+        js/
+            api.js
+            app.js
+            auth.js
+            ui.js
+            screens/
+                academic.js
+                finance.js
+                home.js
+
+
+==================================================
+
+### أكواد ومحتويات الملفات (File Contents) ###
+
+--- File: api.php ---
+```
+<?php
+/**
+ * Marifah App API - Odoo Live Connection & Billplz Direct Integration
+ */
+header('Content-Type: application/json; charset=utf-8');
+header('Access-Control-Allow-Origin: *');
+header('Access-Control-Allow-Methods: POST, GET, OPTIONS');
+header('Access-Control-Allow-Headers: Content-Type, Authorization');
+
+if ($_SERVER['REQUEST_METHOD'] == 'OPTIONS') { http_response_code(200); exit; }
+
+define('ODOO_URL',  'https://portal.marifah.edu.my');
+define('ODOO_DB',   'Marifahdb');
+define('ODOO_USER', 'ezzittech@gmail.com');
+define('ODOO_PASS', 'Abulez@2526');
+$SID = null;
+
+function odoo_post(string $path, array $payload): array {
+    global $SID;
+    $ch = curl_init(ODOO_URL . $path);
+    $headers = ['Content-Type: application/json'];
+    if ($SID) $headers[] = 'Cookie: session_id=' . $SID;
+    curl_setopt_array($ch, [
+        CURLOPT_POST => true, CURLOPT_POSTFIELDS => json_encode($payload),
+        CURLOPT_HTTPHEADER => $headers, CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_HEADER => true, CURLOPT_TIMEOUT => 60,
+        CURLOPT_SSL_VERIFYPEER => false, CURLOPT_SSL_VERIFYHOST => 0
+    ]);
+    $raw = curl_exec($ch);
+    if ($raw === false) throw new Exception("cURL Error: " . curl_error($ch));
+    $hlen = curl_getinfo($ch, CURLINFO_HEADER_SIZE);
+    curl_close($ch);
+    if (preg_match('/session_id=([^;]+)/i', substr($raw, 0, $hlen), $m)) $SID = $m[1];
+    return json_decode(substr($raw, $hlen), true) ?? [];
+}
+
+function odoo_auth(): bool {
+    $j = odoo_post('/web/session/authenticate', [
+        'jsonrpc' => '2.0', 'method' => 'call', 'id' => 1,
+        'params' => ['db' => ODOO_DB, 'login' => ODOO_USER, 'password' => ODOO_PASS]
+    ]);
+    if (isset($j['error'])) throw new Exception("Odoo Auth Error");
+    return !empty($j['result']['uid']);
+}
+
+function odoo_call(string $model, string $method, array $args, array $kwargs=[]) {
+    $j = odoo_post('/web/dataset/call_kw', [
+        'jsonrpc'=>'2.0','method'=>'call','id'=>1,
+        'params'=>['model'=>$model,'method'=>$method,'args'=>$args, 'kwargs'=>array_merge($kwargs,['context'=>[]])]
+    ]);
+    if (!empty($j['error'])) throw new Exception($j['error']['data']['message'] ?? 'Odoo Error');
+    return $j['result'] ?? [];
+}
+
+$input = json_decode(file_get_contents('php://input'), true);
+$action = $input['action'] ?? '';
+
+// ==========================================
+// ACTION 1: تسجيل الدخول
+// ==========================================
+if ($action === 'login') {
+    $student_id = trim($input['student_id'] ?? '');
+    if (empty($student_id)) { echo json_encode(['success'=>false, 'message'=>'رقم الطالب مطلوب']); exit; }
+
+    try {
+        if (!odoo_auth()) throw new Exception("تعذر الاتصال بالنظام.");
+
+        $domain = [['x_student_number', '=', $student_id]]; 
+        $partners = odoo_call('res.partner', 'search_read', [$domain], ['fields' => ['id', 'name', 'x_student_number'], 'limit' => 1]);
+        if (empty($partners)) throw new Exception("لم يتم العثور على طالب برقم القيد (".$student_id.")");
+        
+        $partner_id = $partners[0]['id'];
+        
+        $move_domain = [['partner_id', '=', $partner_id], ['move_type', '=', 'out_invoice'], ['state', '=', 'posted']];
+        $moves = odoo_call('account.move', 'search_read', [$move_domain], [
+            'fields' => ['name', 'invoice_date', 'amount_total', 'amount_residual', 'payment_state'],
+            'order'  => 'invoice_date desc', 'limit'  => 0
+        ]);
+
+        $invoices = []; $total_due = 0.0;
+        foreach ($moves as $move) {
+            $residual = (float)$move['amount_residual'];
+            $total_due += $residual;
+            $status = ($move['payment_state'] === 'paid' || $move['payment_state'] === 'in_payment' || $residual <= 0) ? 'paid' : 'unpaid';
+            $invoices[] = [
+                'id' => $move['name'], 'title' => 'Tuition Fee / رسوم دراسية', 
+                'date' => $move['invoice_date'], 'amount' => (float)$move['amount_total'], 'status' => $status
+            ];
+        }
+
+        echo json_encode(['success' => true, 'data' => [
+            'student_id' => $student_id, 'name' => $partners[0]['name'],
+            'finance' => ['total_due' => $total_due, 'invoices' => $invoices],
+            'academic' => ['attendance_rate' => 89.5, 'days_present' => 52, 'days_absent' => 2, 'grades' => [['subject' => 'Math', 'score' => 90, 'grade' => 'A', 'teacher' => 'Fedena Mock']]]
+        ]]);
+    } catch (Exception $e) { echo json_encode(['success' => false, 'message' => $e->getMessage()]); }
+    exit;
+}
+
+// ==========================================
+// ACTION 2: توليد رابط الدفع مباشرة من Billplz
+// ==========================================
+if ($action === 'get_payment_link') {
+    $student_id = trim($input['student_id'] ?? '');
+    $invoice_name = trim($input['invoice_id'] ?? '');
+
+    try {
+        if (!odoo_auth()) throw new Exception("تعذر الاتصال بالنظام.");
+
+        // 1. جلب بيانات العميل والفاتورة
+        $partners = odoo_call('res.partner', 'search_read', [[['x_student_number', '=', $student_id]]], ['fields' => ['id', 'name', 'email'], 'limit' => 1]);
+        if (empty($partners)) throw new Exception("الطالب غير موجود.");
+        $partner_id = $partners[0]['id'];
+        $partner_name = $partners[0]['name'];
+        $partner_email = $partners[0]['email'] ?: 'student@marifah.edu.my';
+
+        $moves = odoo_call('account.move', 'search_read', [[['name', '=', $invoice_name], ['partner_id', '=', $partner_id], ['state', '=', 'posted']]], ['fields' => ['id', 'amount_residual', 'currency_id'], 'limit' => 1]);
+        if (empty($moves)) throw new Exception("الفاتورة غير موجودة.");
+        
+        $invoice_id = $moves[0]['id'];
+        $amount_residual = (float)$moves[0]['amount_residual'];
+        $currency_id = $moves[0]['currency_id'][0];
+        
+        if ($amount_residual <= 0) throw new Exception("هذه الفاتورة مدفوعة بالكامل.");
+
+        // 2. جلب مفاتيح Billplz من Odoo
+        $providers = odoo_call('payment.provider', 'search_read', [[['code', '=', 'billplz'], ['state', 'in', ['enabled', 'test']]]], ['fields' => ['id', 'billplz_api_key', 'billplz_collection_id', 'billplz_sandbox'], 'limit' => 1]);
+        if (empty($providers)) throw new Exception("بوابة الدفع غير مفعلة.");
+        
+        $provider_id = $providers[0]['id'];
+        $billplz_api_key = $providers[0]['billplz_api_key'];
+        $billplz_collection_id = $providers[0]['billplz_collection_id'];
+        $is_sandbox = $providers[0]['billplz_sandbox'];
+
+        $pm_data = odoo_call('ir.model.data', 'search_read', [[['module', '=', 'payment_billplz'], ['name', '=', 'payment_method_billplz']]], ['fields' => ['res_id'], 'limit' => 1]);
+        $pm_id = $pm_data[0]['res_id'];
+
+        // 3. إنشاء حركة الدفع (Draft) في أودوو
+        $tx_ref = $invoice_name . '-' . time();
+        $tx_id = odoo_call('payment.transaction', 'create', [[
+            'provider_id' => $provider_id,
+            'payment_method_id' => $pm_id,
+            'reference' => $tx_ref,
+            'amount' => $amount_residual,
+            'currency_id' => $currency_id,
+            'partner_id' => $partner_id,
+            'operation' => 'online_redirect',
+            'state' => 'draft',
+            'invoice_ids' => [[4, $invoice_id]]
+        ]]);
+
+        // 4. إنشاء الفاتورة في Billplz عبر API مباشرة
+        $billplz_endpoint = $is_sandbox ? 'https://www.billplz-sandbox.com/api/v3/bills' : 'https://www.billplz.com/api/v3/bills';
+        $amount_cents = (int)round($amount_residual * 100);
+
+        $billplz_payload = [
+            'collection_id' => $billplz_collection_id,
+            'email' => $partner_email,
+            'name' => $partner_name,
+            'amount' => $amount_cents,
+            'callback_url' => ODOO_URL . '/payment/billplz/webhook',
+            'redirect_url' => ODOO_URL . '/payment/billplz/return?ref=' . $tx_ref,
+            'description' => 'Payment for ' . $invoice_name,
+            'reference_1_label' => 'Reference',
+            'reference_1' => $tx_ref
+        ];
+
+        $ch = curl_init($billplz_endpoint);
+        curl_setopt($ch, CURLOPT_RETURNTRANSFER, true);
+        curl_setopt($ch, CURLOPT_USERPWD, $billplz_api_key . ':');
+        curl_setopt($ch, CURLOPT_HTTPHEADER, ['Content-Type: application/json']);
+        curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($billplz_payload));
+        
+        $response = curl_exec($ch);
+        $http_code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+
+        if ($http_code != 200) throw new Exception("فشل الاتصال بـ Billplz: " . $response);
+
+        $billplz_data = json_decode($response, true);
+        $bill_id = $billplz_data['id'] ?? '';
+        $payment_url = $billplz_data['url'] ?? '';
+
+        if (empty($bill_id) || empty($payment_url)) throw new Exception("استجابة غير صحيحة من بوابة الدفع.");
+
+        // 5. تحديث حركة الدفع في أودوو برقم وتفاصيل فاتورة Billplz
+        odoo_call('payment.transaction', 'write', [[$tx_id], [
+            'billplz_bill_id' => $bill_id,
+            'billplz_url' => $payment_url,
+            'billplz_myr_amount' => $amount_residual
+        ]]);
+
+        echo json_encode(['success' => true, 'payment_url' => $payment_url]);
+    } catch (Exception $e) {
+        echo json_encode(['success' => false, 'message' => $e->getMessage()]);
+    }
+    exit;
+}
+
+echo json_encode(['success' => false, 'message' => 'Invalid Request']);
+?>
+```
+
+--- File: index.html ---
+```
+<!DOCTYPE html>
+<html lang="en" dir="ltr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <meta name="theme-color" content="#7a1228">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <title>Marifah International School</title>
+    <link rel="manifest" href="manifest.json">
+
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200" rel="stylesheet">
+
+    <style>
+        /* ─── DESIGN TOKENS ─── */
+        :root {
+            --p:       #7a1228;
+            --p2:      #5c0d1e;
+            --p-light: #9e1a36;
+            --p-glow:  rgba(122,18,40,0.18);
+            --bg:      #f4f6fb;
+            --surf:    #ffffff;
+            --text:    #1a2236;
+            --muted:   #64748b;
+            --border:  #e8edf5;
+            --ok:      #10b981;
+            --warn:    #f59e0b;
+            --err:     #ef4444;
+            --radius:  18px;
+            --nav-h:   72px;
+            --safe-b:  env(safe-area-inset-bottom, 0px);
+        }
+
+        /* ─── RESET ─── */
+        *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+        body {
+            font-family: 'Inter', sans-serif;
+            background: #c9cdd8;
+            color: var(--text);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            min-height: 100dvh;
+            overflow: hidden;
+        }
+
+        /* ─── APP SHELL ─── */
+        .app {
+            width: 100%;
+            max-width: 430px;
+            height: 100dvh;
+            max-height: 100dvh;
+            background: var(--bg);
+            position: relative;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+        }
+        @media (min-height: 860px) {
+            .app { height: 860px; border-radius: 32px; box-shadow: 0 30px 80px rgba(0,0,0,0.25); }
+        }
+
+        /* ─── SCREENS ─── */
+        .screen {
+            position: absolute;
+            inset: 0;
+            display: flex;
+            flex-direction: column;
+            opacity: 0;
+            pointer-events: none;
+            transition: opacity 0.35s ease, transform 0.35s ease;
+            transform: translateY(12px);
+        }
+        .screen.active {
+            opacity: 1;
+            pointer-events: all;
+            transform: translateY(0);
+        }
+
+        /* ─── MATERIAL ICONS ─── */
+        .mi {
+            font-family: 'Material Symbols Rounded';
+            font-weight: normal;
+            font-style: normal;
+            display: inline-block;
+            line-height: 1;
+            text-transform: none;
+            letter-spacing: normal;
+            white-space: nowrap;
+            font-size: 24px;
+            vertical-align: middle;
+        }
+
+        /* ════════════════════════════════
+           LOGIN SCREEN
+        ════════════════════════════════ */
+        #s-login {
+            background: var(--p2);
+            justify-content: flex-end;
+            align-items: center;
+        }
+        .login-hero {
+            position: absolute;
+            top: 0; left: 0; right: 0;
+            height: 52%;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 14px;
+        }
+        .login-logo-ring {
+            width: 90px; height: 90px;
+            border-radius: 28px;
+            background: rgba(255,255,255,0.12);
+            border: 1.5px solid rgba(255,255,255,0.22);
+            display: flex; align-items: center; justify-content: center;
+        }
+        .login-logo-ring svg { width: 54px; height: 46px; }
+        .login-hero h1 { color: #fff; font-size: 26px; font-weight: 800; letter-spacing: -0.3px; }
+        .login-hero p  { color: rgba(255,255,255,0.6); font-size: 13px; font-weight: 500; }
+
+        .login-sheet {
+            width: 100%;
+            background: var(--surf);
+            border-radius: 32px 32px 0 0;
+            padding: 32px 28px calc(32px + var(--safe-b));
+            position: relative;
+            z-index: 2;
+        }
+        .login-sheet h2 { font-size: 22px; font-weight: 800; margin-bottom: 4px; }
+        .login-sheet .sub { font-size: 13px; color: var(--muted); margin-bottom: 28px; }
+
+        .field { margin-bottom: 18px; }
+        .field label { display: block; font-size: 12px; font-weight: 700; color: var(--muted); letter-spacing: 0.5px; text-transform: uppercase; margin-bottom: 8px; }
+        .field-wrap { position: relative; }
+        .field-wrap .mi { position: absolute; left: 14px; top: 50%; transform: translateY(-50%); color: var(--muted); font-size: 20px; pointer-events: none; }
+        .field-wrap input {
+            width: 100%;
+            padding: 15px 15px 15px 44px;
+            border: 1.5px solid var(--border);
+            border-radius: 14px;
+            font-family: inherit;
+            font-size: 15px;
+            background: var(--bg);
+            color: var(--text);
+            outline: none;
+            transition: border-color 0.2s, box-shadow 0.2s;
+        }
+        .field-wrap input:focus { border-color: var(--p); background: #fff; box-shadow: 0 0 0 4px var(--p-glow); }
+        .field-wrap .pw-toggle { position: absolute; right: 14px; top: 50%; transform: translateY(-50%); color: var(--muted); cursor: pointer; font-size: 20px; }
+
+        .btn-primary {
+            width: 100%;
+            background: var(--p);
+            color: #fff;
+            border: none;
+            padding: 17px;
+            border-radius: 14px;
+            font-family: inherit;
+            font-size: 16px;
+            font-weight: 700;
+            cursor: pointer;
+            transition: background 0.2s, transform 0.1s, box-shadow 0.2s;
+            box-shadow: 0 8px 24px var(--p-glow);
+            margin-top: 8px;
+            display: flex; align-items: center; justify-content: center; gap: 8px;
+        }
+        .btn-primary:active { transform: scale(0.98); }
+        .btn-primary:disabled { opacity: 0.65; cursor: not-allowed; transform: none; }
+        .spinner { width: 18px; height: 18px; border: 2px solid rgba(255,255,255,0.35); border-top-color: #fff; border-radius: 50%; animation: spin 0.7s linear infinite; display: none; }
+        .btn-primary.loading .spinner { display: block; }
+        .btn-primary.loading .btn-label { display: none; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+
+        /* ════════════════════════════════
+           SHARED LAYOUT
+        ════════════════════════════════ */
+        .app-screen {
+            flex-direction: column;
+            overflow: hidden;
+        }
+        .topbar {
+            background: var(--surf);
+            padding: 16px 20px 14px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid var(--border);
+            flex-shrink: 0;
+            position: relative;
+            z-index: 10;
+        }
+        .topbar-title { font-size: 18px; font-weight: 800; color: var(--p); }
+        .scroll-area {
+            flex: 1;
+            overflow-y: auto;
+            padding: 20px 18px calc(var(--nav-h) + 16px + var(--safe-b));
+            -webkit-overflow-scrolling: touch;
+        }
+        .scroll-area::-webkit-scrollbar { display: none; }
+
+        /* Avatar */
+        .avatar {
+            width: 42px; height: 42px;
+            border-radius: 50%;
+            background: linear-gradient(135deg, var(--p), var(--p-light));
+            color: #fff;
+            display: flex; align-items: center; justify-content: center;
+            font-size: 16px; font-weight: 800;
+            flex-shrink: 0;
+            border: 2.5px solid var(--surf);
+            box-shadow: 0 2px 10px var(--p-glow);
+        }
+        .avatar.sm { width: 34px; height: 34px; font-size: 13px; }
+
+        /* ─── HOME TOPBAR ─── */
+        .home-topbar {
+            background: var(--surf);
+            padding: 16px 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 1px solid var(--border);
+            flex-shrink: 0;
+        }
+        .home-topbar .greeting p { font-size: 12px; color: var(--muted); font-weight: 500; }
+        .home-topbar .greeting h2 { font-size: 18px; font-weight: 800; color: var(--p); letter-spacing: -0.2px; line-height: 1.2; }
+
+        /* ─── HERO CARD ─── */
+        .hero-card {
+            background: linear-gradient(135deg, var(--p) 0%, var(--p2) 100%);
+            border-radius: var(--radius);
+            padding: 22px 20px;
+            color: #fff;
+            margin-bottom: 22px;
+            position: relative;
+            overflow: hidden;
+        }
+        .hero-card::before {
+            content: '';
+            position: absolute;
+            top: -60px; right: -60px;
+            width: 180px; height: 180px;
+            background: rgba(255,255,255,0.06);
+            border-radius: 50%;
+        }
+        .hero-card::after {
+            content: '';
+            position: absolute;
+            bottom: -40px; left: -40px;
+            width: 130px; height: 130px;
+            background: rgba(255,255,255,0.04);
+            border-radius: 50%;
+        }
+        .hero-card-top { display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; }
+        .hero-card-top span { font-size: 12px; font-weight: 600; opacity: 0.75; letter-spacing: 0.3px; }
+        .hero-card-top .mi { font-size: 22px; opacity: 0.7; }
+        .hero-label { font-size: 12px; opacity: 0.75; margin-bottom: 4px; }
+        .hero-amount { font-size: 34px; font-weight: 900; letter-spacing: -1px; line-height: 1; margin-bottom: 2px; }
+        .hero-amount span { font-size: 16px; font-weight: 600; opacity: 0.8; }
+        .hero-stats {
+            display: flex;
+            gap: 0;
+            margin-top: 18px;
+            border-top: 1px solid rgba(255,255,255,0.12);
+            padding-top: 16px;
+        }
+        .hero-stat { flex: 1; }
+        .hero-stat + .hero-stat { border-left: 1px solid rgba(255,255,255,0.12); padding-left: 16px; }
+        .hero-stat .hs-label { font-size: 11px; opacity: 0.7; margin-bottom: 3px; }
+        .hero-stat .hs-val   { font-size: 16px; font-weight: 800; }
+
+        /* ─── SECTION TITLE ─── */
+        .sec-title { font-size: 15px; font-weight: 700; color: var(--text); margin-bottom: 14px; }
+
+        /* ─── QUICK ACTIONS ─── */
+        .quick-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 10px;
+            margin-bottom: 24px;
+        }
+        .qa-btn {
+            background: var(--surf);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 14px 6px 12px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 9px;
+            cursor: pointer;
+            transition: transform 0.15s, box-shadow 0.15s;
+            outline: none;
+        }
+        .qa-btn:active { transform: scale(0.93); }
+        .qa-icon {
+            width: 44px; height: 44px;
+            border-radius: 13px;
+            display: flex; align-items: center; justify-content: center;
+        }
+        .qa-icon .mi { font-size: 22px; }
+        .qa-label { font-size: 11px; font-weight: 600; color: var(--muted); text-align: center; }
+
+        /* ─── LIST CARDS ─── */
+        .list-card {
+            background: var(--surf);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 16px;
+            margin-bottom: 12px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            transition: transform 0.15s;
+        }
+        .list-card:active { transform: scale(0.99); }
+        .lc-left { flex: 1; padding-right: 12px; }
+        .lc-left h4 { font-size: 14px; font-weight: 700; margin-bottom: 5px; }
+        .lc-left p  { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 4px; }
+        .lc-right { display: flex; flex-direction: column; align-items: flex-end; gap: 6px; }
+        .lc-right .amount { font-size: 17px; font-weight: 800; }
+        .lc-right .amount.due { color: var(--p); }
+        .lc-right .amount.ok  { color: var(--ok); }
+
+        /* Badge */
+        .badge {
+            display: inline-block;
+            padding: 3px 10px;
+            border-radius: 20px;
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: 0.4px;
+            text-transform: uppercase;
+        }
+        .badge.paid   { background: #dcfce7; color: #15803d; }
+        .badge.unpaid { background: #fee2e2; color: #b91c1c; }
+
+        /* Pay Button */
+        .btn-pay {
+            background: var(--p);
+            color: #fff;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 10px;
+            font-family: inherit;
+            font-size: 12px;
+            font-weight: 700;
+            cursor: pointer;
+            transition: transform 0.15s, opacity 0.15s;
+            box-shadow: 0 4px 12px var(--p-glow);
+            min-width: 85px;
+            display: flex; align-items: center; justify-content: center; gap: 5px;
+        }
+        .btn-pay:active { transform: scale(0.95); }
+        .btn-pay:disabled { background: #cbd5e1; box-shadow: none; cursor: not-allowed; transform: none; }
+
+        /* ─── STAT CARDS (academic) ─── */
+        .stat-cards { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; margin-bottom: 20px; }
+        .stat-card {
+            background: var(--surf);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 16px;
+        }
+        .stat-card .sc-icon { font-size: 22px; margin-bottom: 8px; }
+        .stat-card .sc-val  { font-size: 26px; font-weight: 900; color: var(--text); line-height: 1; margin-bottom: 4px; }
+        .stat-card .sc-lbl  { font-size: 12px; color: var(--muted); font-weight: 500; }
+        .stat-card.ok  .sc-val { color: var(--ok);   }
+        .stat-card.err .sc-val { color: var(--err);  }
+        .stat-card.big { grid-column: 1 / -1; background: linear-gradient(135deg, #0f172a, #1e3a5f); }
+        .stat-card.big .sc-lbl, .stat-card.big .sc-val { color: #fff; }
+        .stat-card.big .sc-val { font-size: 42px; }
+
+        /* ─── BOTTOM NAV ─── */
+        .bottom-nav {
+            position: absolute;
+            bottom: 0; left: 0; right: 0;
+            height: calc(var(--nav-h) + var(--safe-b));
+            background: var(--surf);
+            border-top: 1px solid var(--border);
+            border-radius: 20px 20px 0 0;
+            display: none;
+            padding-bottom: var(--safe-b);
+            z-index: 200;
+        }
+        .bottom-nav.visible { display: flex; }
+        .nav-items { display: flex; width: 100%; height: var(--nav-h); }
+        .nav-item {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            gap: 4px;
+            color: var(--muted);
+            background: transparent;
+            border: none;
+            cursor: pointer;
+            outline: none;
+            transition: color 0.2s;
+            position: relative;
+        }
+        .nav-item .mi { font-size: 24px; transition: transform 0.2s; }
+        .nav-item .nav-label { font-size: 10px; font-weight: 600; font-family: inherit; }
+        .nav-item.active { color: var(--p); }
+        .nav-item.active .mi {
+            font-variation-settings: 'FILL' 1;
+            transform: translateY(-2px);
+        }
+        .nav-item.active::before {
+            content: '';
+            position: absolute;
+            top: 0; left: 50%;
+            transform: translateX(-50%);
+            width: 32px; height: 3px;
+            background: var(--p);
+            border-radius: 0 0 4px 4px;
+        }
+
+        /* ─── TOAST ─── */
+        #toast-wrap {
+            position: absolute;
+            bottom: calc(var(--nav-h) + 12px + var(--safe-b));
+            left: 50%;
+            transform: translateX(-50%);
+            z-index: 9999;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            width: 92%;
+            pointer-events: none;
+        }
+        .toast {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            padding: 14px 16px;
+            border-radius: 14px;
+            font-size: 13px;
+            font-weight: 600;
+            color: #fff;
+            animation: toast-in 0.4s cubic-bezier(0.175,0.885,0.32,1.275) forwards,
+                       toast-out 0.3s ease-in 3s forwards;
+        }
+        .toast.ok  { background: var(--ok); }
+        .toast.err { background: var(--err); }
+        .toast.info { background: #334155; }
+        .toast .mi { font-size: 20px; flex-shrink: 0; }
+        @keyframes toast-in  { from { opacity:0; transform:translateY(16px); } to { opacity:1; transform:translateY(0); } }
+        @keyframes toast-out { from { opacity:1; } to { opacity:0; transform:translateY(8px); } }
+
+        /* ════════════════════════════════
+           STUDENT ID CARD (flip)
+        ════════════════════════════════ */
+        .id-card-section { margin-bottom: 24px; }
+        .card-flip-wrap {
+            width: 100%;
+            aspect-ratio: 5/8;
+            max-width: 260px;
+            margin: 0 auto;
+            perspective: 1000px;
+            cursor: pointer;
+        }
+        .card-flip-inner {
+            position: relative;
+            width: 100%;
+            height: 100%;
+            transform-style: preserve-3d;
+            transition: transform 0.65s cubic-bezier(0.4, 0.2, 0.2, 1);
+        }
+        .card-flip-wrap.flipped .card-flip-inner { transform: rotateY(180deg); }
+        .card-face {
+            position: absolute;
+            inset: 0;
+            backface-visibility: hidden;
+            -webkit-backface-visibility: hidden;
+            border-radius: 18px;
+            overflow: hidden;
+        }
+
+        /* FRONT FACE */
+        .card-front {
+            background: #fff;
+            display: flex;
+            flex-direction: column;
+            border: 1px solid var(--border);
+        }
+        .cf-top {
+            background: #fff;
+            padding: 20px 16px 12px;
+            text-align: center;
+            flex-shrink: 0;
+        }
+        .cf-school { font-size: 15px; font-weight: 800; color: #7b1d3a; letter-spacing: 0.2px; margin-top: 6px; }
+        .cf-tagline { font-size: 10px; font-style: italic; color: #c0606a; margin-top: 1px; }
+        .cf-diamond-zone {
+            position: relative;
+            flex-shrink: 0;
+            height: 130px;
+            overflow: hidden;
+        }
+        .cf-peaks {
+            position: absolute;
+            bottom: 0; left: 0; right: 0;
+        }
+        .cf-photo-clip {
+            position: absolute;
+            top: 0; left: 50%;
+            transform: translateX(-50%);
+            width: 106px;
+            height: 106px;
+            z-index: 2;
+            clip-path: polygon(50% 0%, 100% 50%, 50% 100%, 0% 50%);
+            background: #e8c4b0;
+        }
+        .cf-photo-clip img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+        .cf-photo-clip .photo-placeholder {
+            width: 100%;
+            height: 100%;
+            background: #e0bdb0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .cf-photo-clip .photo-placeholder .mi { font-size: 42px; color: #c09070; }
+        .cf-bottom {
+            flex: 1;
+            background: #8b2020;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            padding: 20px 16px 22px;
+            text-align: center;
+        }
+        .cf-name  { font-size: 19px; font-weight: 900; color: #fff; line-height: 1.2; letter-spacing: 0.3px; }
+        .cf-class { font-size: 12px; color: rgba(255,255,255,0.8); margin-top: 4px; font-weight: 500; }
+        .cf-id    { font-size: 12px; font-weight: 800; color: #fff; letter-spacing: 1.5px; margin-top: 10px; background: rgba(255,255,255,0.18); padding: 5px 14px; border-radius: 20px; font-family: monospace; }
+
+        /* BACK FACE */
+        .card-back {
+            background: linear-gradient(160deg, #6b1a1a 0%, #8b2020 50%, #5c0d0d 100%);
+            transform: rotateY(180deg);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 22px 18px 20px;
+            gap: 12px;
+        }
+        .cb-logo { opacity: 0.3; margin-bottom: 4px; }
+        .cb-divider { width: 100%; height: 1px; background: rgba(255,255,255,0.15); }
+        .cb-qr {
+            background: #fff;
+            border-radius: 12px;
+            padding: 10px;
+            width: 90px; height: 90px;
+            display: flex; align-items: center; justify-content: center;
+        }
+        .cb-qr .mi { font-size: 64px; color: #1a1a1a; }
+        .cb-info { text-align: center; }
+        .cb-info .cb-name { font-size: 14px; font-weight: 800; color: #fff; }
+        .cb-info .cb-detail { font-size: 11px; color: rgba(255,255,255,0.6); margin-top: 3px; }
+        .cb-emergency { width: 100%; border-radius: 12px; background: rgba(255,255,255,0.1); padding: 12px 14px; }
+        .cb-emergency h5 { font-size: 10px; font-weight: 700; color: rgba(255,255,255,0.6); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 8px; }
+        .cb-row { display: flex; align-items: center; gap: 8px; margin-bottom: 5px; }
+        .cb-row .mi { font-size: 15px; color: rgba(255,255,255,0.55); }
+        .cb-row span { font-size: 11px; color: rgba(255,255,255,0.8); font-weight: 500; }
+        .cb-tap { font-size: 10px; color: rgba(255,255,255,0.35); text-align: center; }
+
+        .flip-hint { text-align: center; margin-top: 10px; font-size: 12px; color: var(--muted); font-weight: 500; }
+        .flip-hint .mi { font-size: 15px; vertical-align: middle; margin-right: 3px; }
+
+        /* ─── FINANCE HERO ─── */
+        .finance-hero {
+            background: linear-gradient(135deg, #0f172a, #1e3a5f);
+            border-radius: var(--radius);
+            padding: 22px 20px;
+            color: #fff;
+            margin-bottom: 20px;
+        }
+        .finance-hero .fh-label { font-size: 12px; opacity: 0.7; margin-bottom: 6px; }
+        .finance-hero .fh-amount { font-size: 36px; font-weight: 900; letter-spacing: -1px; }
+        .finance-hero .fh-amount span { font-size: 16px; font-weight: 600; opacity: 0.75; }
+        .fh-chips { display: flex; gap: 8px; margin-top: 14px; }
+        .fh-chip { background: rgba(255,255,255,0.1); border-radius: 20px; padding: 5px 12px; font-size: 11px; font-weight: 600; color: rgba(255,255,255,0.8); }
+        .fh-chip.ok { background: rgba(16,185,129,0.25); color: #6ee7b7; }
+
+        /* ─── ATTENDANCE RING ─── */
+        .att-ring-wrap { display: flex; flex-direction: column; align-items: center; margin-bottom: 22px; }
+        .att-ring-svg { overflow: visible; }
+        .att-ring-bg   { fill: none; stroke: #f1f5f9; stroke-width: 10; }
+        .att-ring-fill { fill: none; stroke: var(--ok); stroke-width: 10; stroke-linecap: round; transition: stroke-dashoffset 1.2s cubic-bezier(0.4,0,0.2,1); }
+        .att-ring-label { font-size: 28px; font-weight: 900; fill: var(--text); }
+        .att-ring-sub   { font-size: 11px; fill: var(--muted); font-weight: 500; }
+
+        /* ─── PROFILE SCREEN ─── */
+        .profile-hero {
+            background: linear-gradient(135deg, var(--p), var(--p2));
+            padding: 32px 20px 24px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 10px;
+            flex-shrink: 0;
+        }
+        .profile-av-lg {
+            width: 72px; height: 72px;
+            border-radius: 50%;
+            background: rgba(255,255,255,0.2);
+            border: 3px solid rgba(255,255,255,0.45);
+            display: flex; align-items: center; justify-content: center;
+            font-size: 28px; font-weight: 900; color: #fff;
+        }
+        .profile-name { font-size: 18px; font-weight: 800; color: #fff; }
+        .profile-id   { font-size: 12px; color: rgba(255,255,255,0.65); font-weight: 500; }
+
+        .menu-list { margin-top: 4px; }
+        .menu-item {
+            background: var(--surf);
+            border: 1px solid var(--border);
+            border-radius: 14px;
+            padding: 16px;
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            margin-bottom: 10px;
+            cursor: pointer;
+            transition: transform 0.12s;
+        }
+        .menu-item:active { transform: scale(0.98); }
+        .menu-icon { width: 38px; height: 38px; border-radius: 11px; display: flex; align-items: center; justify-content: center; flex-shrink: 0; }
+        .menu-icon .mi { font-size: 20px; }
+        .menu-text { flex: 1; }
+        .menu-text h4 { font-size: 14px; font-weight: 700; }
+        .menu-text p  { font-size: 12px; color: var(--muted); margin-top: 2px; }
+        .menu-arrow .mi { font-size: 18px; color: var(--muted); }
+
+        .version-tag { text-align: center; color: var(--muted); font-size: 11px; margin-top: 24px; }
+
+        /* ─── SKELETON LOADING ─── */
+        .skel {
+            background: linear-gradient(90deg, #f0f0f0 25%, #e0e0e0 50%, #f0f0f0 75%);
+            background-size: 200% 100%;
+            animation: skel-shimmer 1.4s infinite;
+            border-radius: 8px;
+        }
+        @keyframes skel-shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+    </style>
+</head>
+<body>
+<div class="app" id="app">
+
+    <!-- ── TOAST ── -->
+    <div id="toast-wrap"></div>
+
+    <!-- ════ 1. LOGIN ════ -->
+    <div id="s-login" class="screen active">
+        <div class="login-hero">
+            <div class="login-logo-ring">
+                <svg viewBox="0 0 54 46" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <polygon points="27,0 40,13 27,26 14,13" fill="#fff" opacity="0.95"/>
+                    <polygon points="14,13 27,26 14,39 1,26" fill="#fff" opacity="0.65"/>
+                    <polygon points="40,13 53,26 40,39 27,26" fill="#fff" opacity="0.65"/>
+                </svg>
+            </div>
+            <h1>Marifah</h1>
+            <p>International School</p>
+        </div>
+        <div class="login-sheet">
+            <h2>Welcome back</h2>
+            <p class="sub">Sign in to your student portal</p>
+            <form id="login-form" novalidate>
+                <div class="field">
+                    <label>Student ID</label>
+                    <div class="field-wrap">
+                        <span class="mi">badge</span>
+                        <input type="text" id="inp-id" placeholder="e.g. MIS0529" autocomplete="off" spellcheck="false">
+                    </div>
+                </div>
+                <div class="field">
+                    <label>Password</label>
+                    <div class="field-wrap">
+                        <span class="mi">lock</span>
+                        <input type="password" id="inp-pw" placeholder="••••••••">
+                        <span class="mi pw-toggle" id="pw-eye" onclick="togglePw()">visibility</span>
+                    </div>
+                </div>
+                <button type="submit" class="btn-primary" id="btn-login">
+                    <div class="spinner" id="login-spinner"></div>
+                    <span class="btn-label">Sign In</span>
+                </button>
+            </form>
+        </div>
+    </div>
+
+    <!-- ════ 2. HOME ════ -->
+    <div id="s-home" class="screen app-screen">
+        <div class="home-topbar">
+            <div class="greeting">
+                <p>Welcome back,</p>
+                <h2 id="ui-name">Loading…</h2>
+            </div>
+            <div class="avatar" id="ui-avatar">A</div>
+        </div>
+        <div class="scroll-area">
+
+            <!-- Hero balance card -->
+            <div class="hero-card">
+                <div class="hero-card-top">
+                    <span id="ui-student-ref">ID: ----</span>
+                    <span class="mi">school</span>
+                </div>
+                <div class="hero-label">Outstanding Balance</div>
+                <div class="hero-amount"><span>RM </span><span id="ui-due">0.00</span></div>
+                <div class="hero-stats">
+                    <div class="hero-stat">
+                        <div class="hs-label">Attendance</div>
+                        <div class="hs-val" id="ui-att">0%</div>
+                    </div>
+                    <div class="hero-stat">
+                        <div class="hs-label">Latest Grade</div>
+                        <div class="hs-val" id="ui-grade">--</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Quick actions -->
+            <div class="sec-title">Quick Services</div>
+            <div class="quick-grid">
+                <button class="qa-btn" onclick="goTo('s-finance',1)">
+                    <div class="qa-icon" style="background:#ffe4e6"><span class="mi" style="color:#7a1228">account_balance_wallet</span></div>
+                    <span class="qa-label">Payments</span>
+                </button>
+                <button class="qa-btn" onclick="goTo('s-academic',2)">
+                    <div class="qa-icon" style="background:#dbeafe"><span class="mi" style="color:#2563eb">star</span></div>
+                    <span class="qa-label">Grades</span>
+                </button>
+                <button class="qa-btn" onclick="goTo('s-academic',2)">
+                    <div class="qa-icon" style="background:#dcfce7"><span class="mi" style="color:#16a34a">fact_check</span></div>
+                    <span class="qa-label">Attend.</span>
+                </button>
+                <button class="qa-btn" onclick="goTo('s-profile',3)">
+                    <div class="qa-icon" style="background:#fef3c7"><span class="mi" style="color:#d97706">badge</span></div>
+                    <span class="qa-label">My Card</span>
+                </button>
+            </div>
+
+            <!-- Recent invoices preview -->
+            <div class="sec-title">Recent Invoices</div>
+            <div id="home-invoices"></div>
+
+        </div>
+    </div>
+
+    <!-- ════ 3. FINANCE ════ -->
+    <div id="s-finance" class="screen app-screen">
+        <div class="topbar">
+            <span class="topbar-title">Financial Records</span>
+            <div class="avatar sm" id="ui-av-fin">A</div>
+        </div>
+        <div class="scroll-area">
+            <div class="finance-hero">
+                <div class="fh-label">Total Outstanding</div>
+                <div class="fh-amount"><span>RM </span><span id="ui-fin-due">0.00</span></div>
+                <div class="fh-chips">
+                    <div class="fh-chip" id="ui-unpaid-count">0 Unpaid</div>
+                    <div class="fh-chip ok" id="ui-paid-count">0 Paid</div>
+                </div>
+            </div>
+            <div class="sec-title">All Invoices</div>
+            <div id="invoices-list"></div>
+        </div>
+    </div>
+
+    <!-- ════ 4. ACADEMIC ════ -->
+    <div id="s-academic" class="screen app-screen">
+        <div class="topbar">
+            <span class="topbar-title">Academic Record</span>
+            <div class="avatar sm" id="ui-av-acad">A</div>
+        </div>
+        <div class="scroll-area">
+
+            <!-- Attendance ring -->
+            <div class="att-ring-wrap">
+                <svg class="att-ring-svg" width="160" height="160" viewBox="0 0 160 160" role="img" aria-label="Attendance rate">
+                    <circle class="att-ring-bg"   cx="80" cy="80" r="68"/>
+                    <circle class="att-ring-fill" cx="80" cy="80" r="68"
+                        stroke-dasharray="427.3"
+                        stroke-dashoffset="427.3"
+                        id="att-ring-circle"
+                        transform="rotate(-90 80 80)"/>
+                    <text class="att-ring-label" x="80" y="78" text-anchor="middle" dominant-baseline="middle" id="att-ring-pct" font-family="Inter,sans-serif" font-weight="900">0%</text>
+                    <text class="att-ring-sub" x="80" y="98" text-anchor="middle" dominant-baseline="middle" font-family="Inter,sans-serif">Attendance</text>
+                </svg>
+            </div>
+
+            <div class="stat-cards">
+                <div class="stat-card ok">
+                    <div class="sc-icon">✅</div>
+                    <div class="sc-val" id="ui-present">0</div>
+                    <div class="sc-lbl">Days Present</div>
+                </div>
+                <div class="stat-card err">
+                    <div class="sc-icon">❌</div>
+                    <div class="sc-val" id="ui-absent">0</div>
+                    <div class="sc-lbl">Days Absent</div>
+                </div>
+            </div>
+
+            <div class="sec-title">Grades</div>
+            <div id="grades-list"></div>
+        </div>
+    </div>
+
+    <!-- ════ 5. PROFILE / ID CARD ════ -->
+    <div id="s-profile" class="screen app-screen">
+        <div class="topbar">
+            <span class="topbar-title">My Profile</span>
+        </div>
+        <div class="scroll-area">
+
+            <!-- Profile hero -->
+            <div class="profile-hero">
+                <div class="profile-av-lg" id="ui-pav">A</div>
+                <div class="profile-name" id="ui-pname">Loading…</div>
+                <div class="profile-id" id="ui-pid">ID: ----</div>
+            </div>
+
+            <!-- Student ID Card -->
+            <div class="id-card-section" style="margin-top: 24px;">
+                <div class="sec-title">Student ID Card</div>
+
+                <div class="card-flip-wrap" id="card-flip" onclick="flipCard()" aria-label="Tap to flip student ID card" role="button" tabindex="0">
+                    <div class="card-flip-inner">
+
+                        <!-- FRONT -->
+                        <div class="card-face card-front">
+                            <div class="cf-top">
+                                <svg width="48" height="42" viewBox="0 0 54 46" fill="none">
+                                    <polygon points="27,0 40,13 27,26 14,13" fill="#7b1d3a"/>
+                                    <polygon points="14,13 27,26 14,39 1,26" fill="#c0404a"/>
+                                    <polygon points="40,13 53,26 40,39 27,26" fill="#c0404a"/>
+                                </svg>
+                                <div class="cf-school">Marifah</div>
+                                <div class="cf-tagline">International School</div>
+                            </div>
+                            <div class="cf-diamond-zone">
+                                <!-- Mountain peaks SVG -->
+                                <svg class="cf-peaks" viewBox="0 0 280 110" preserveAspectRatio="none" width="100%" height="110">
+                                    <polygon points="0,110 28,55 56,110" fill="#c0404a" opacity="0.6"/>
+                                    <polygon points="28,110 56,55 84,110" fill="#a03030" opacity="0.8"/>
+                                    <polygon points="56,110 84,55 112,110" fill="#c0404a" opacity="0.55"/>
+                                    <polygon points="84,110 112,55 140,110" fill="#8b2020"/>
+                                    <polygon points="112,110 140,55 168,110" fill="#c0404a" opacity="0.65"/>
+                                    <polygon points="140,110 168,55 196,110" fill="#a03030" opacity="0.75"/>
+                                    <polygon points="168,110 196,55 224,110" fill="#c0404a" opacity="0.55"/>
+                                    <polygon points="196,110 224,55 252,110" fill="#8b2020" opacity="0.8"/>
+                                    <polygon points="224,110 252,55 280,110" fill="#c0404a" opacity="0.6"/>
+                                    <rect x="0" y="88" width="280" height="22" fill="#8b2020"/>
+                                </svg>
+                                <!-- Photo diamond -->
+                                <div class="cf-photo-clip">
+                                    <div class="photo-placeholder">
+                                        <span class="mi">person</span>
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="cf-bottom">
+                                <div class="cf-name" id="card-name">Student Name</div>
+                                <div class="cf-class" id="card-class">Class Name</div>
+                                <div class="cf-id" id="card-id">MIS-000000</div>
+                            </div>
+                        </div>
+
+                        <!-- BACK -->
+                        <div class="card-face card-back">
+                            <div class="cb-logo">
+                                <svg width="36" height="30" viewBox="0 0 54 46" fill="none">
+                                    <polygon points="27,0 40,13 27,26 14,13" fill="#fff"/>
+                                    <polygon points="14,13 27,26 14,39 1,26" fill="#fff" opacity="0.6"/>
+                                    <polygon points="40,13 53,26 40,39 27,26" fill="#fff" opacity="0.6"/>
+                                </svg>
+                            </div>
+                            <div class="cb-divider"></div>
+                            <div class="cb-qr">
+                                <span class="mi" style="font-size:60px;color:#1a1a1a">qr_code_2</span>
+                            </div>
+                            <div class="cb-info">
+                                <div class="cb-name" id="card-back-name">Student Name</div>
+                                <div class="cb-detail" id="card-back-id">MIS-000000</div>
+                            </div>
+                            <div class="cb-divider"></div>
+                            <div class="cb-emergency">
+                                <h5>Emergency Contact</h5>
+                                <div class="cb-row">
+                                    <span class="mi">phone</span>
+                                    <span>+60 12-345 6789</span>
+                                </div>
+                                <div class="cb-row">
+                                    <span class="mi">local_hospital</span>
+                                    <span>No known allergies</span>
+                                </div>
+                            </div>
+                            <div class="cb-tap">Tap to flip back</div>
+                        </div>
+
+                    </div>
+                </div>
+                <div class="flip-hint"><span class="mi">touch_app</span> Tap card to flip</div>
+            </div>
+
+            <!-- Menu items -->
+            <div class="menu-list" style="margin-top: 24px;">
+                <div class="menu-item">
+                    <div class="menu-icon" style="background:#ffe4e6"><span class="mi" style="color:#7a1228">notifications</span></div>
+                    <div class="menu-text"><h4>Notifications</h4><p>Fee reminders & alerts</p></div>
+                    <div class="menu-arrow"><span class="mi">chevron_right</span></div>
+                </div>
+                <div class="menu-item">
+                    <div class="menu-icon" style="background:#dbeafe"><span class="mi" style="color:#2563eb">help</span></div>
+                    <div class="menu-text"><h4>Support</h4><p>Contact school admin</p></div>
+                    <div class="menu-arrow"><span class="mi">chevron_right</span></div>
+                </div>
+                <div class="menu-item" onclick="logout()" style="border-color:#fee2e2">
+                    <div class="menu-icon" style="background:#fee2e2"><span class="mi" style="color:#ef4444">logout</span></div>
+                    <div class="menu-text"><h4 style="color:#ef4444">Sign Out</h4><p>Clear session data</p></div>
+                    <div class="menu-arrow"><span class="mi" style="color:#ef4444">chevron_right</span></div>
+                </div>
+            </div>
+
+            <div class="version-tag">Marifah Student Portal v2.0</div>
+        </div>
+    </div>
+
+    <!-- ════ BOTTOM NAV ════ -->
+    <nav class="bottom-nav" id="bottom-nav">
+        <div class="nav-items">
+            <button class="nav-item active" onclick="goTo('s-home',0)" id="nav-0">
+                <span class="mi">home</span><span class="nav-label">Home</span>
+            </button>
+            <button class="nav-item" onclick="goTo('s-finance',1)" id="nav-1">
+                <span class="mi">receipt_long</span><span class="nav-label">Finance</span>
+            </button>
+            <button class="nav-item" onclick="goTo('s-academic',2)" id="nav-2">
+                <span class="mi">menu_book</span><span class="nav-label">Academic</span>
+            </button>
+            <button class="nav-item" onclick="goTo('s-profile',3)" id="nav-3">
+                <span class="mi">person</span><span class="nav-label">Profile</span>
+            </button>
+        </div>
+    </nav>
+
+</div>
+
+<script>
+/* ═══════════════════════════════════════
+   CONFIG
+═══════════════════════════════════════ */
+const API_URL    = 'https://isss.com.my/edlnd/api.php';
+const STORE_KEY  = 'mis_session';
+const EXPIRY_MS  = 30 * 24 * 60 * 60 * 1000; // 30 days
+
+let currentStudentId = '';
+let appData = null;
+
+/* ═══════════════════════════════════════
+   TOAST
+═══════════════════════════════════════ */
+function toast(msg, type = 'info') {
+    const wrap = document.getElementById('toast-wrap');
+    const el = document.createElement('div');
+    el.className = `toast ${type}`;
+    const icons = { ok: 'check_circle', err: 'error', info: 'info' };
+    el.innerHTML = `<span class="mi">${icons[type] || 'info'}</span><span>${msg}</span>`;
+    wrap.appendChild(el);
+    setTimeout(() => el.remove(), 3800);
+}
+
+/* ═══════════════════════════════════════
+   SCREEN NAVIGATION
+═══════════════════════════════════════ */
+function goTo(screenId, navIdx) {
+    document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+    document.getElementById(screenId).classList.add('active');
+    document.querySelectorAll('.nav-item').forEach((b, i) => b.classList.toggle('active', i === navIdx));
+}
+
+/* ═══════════════════════════════════════
+   PASSWORD TOGGLE
+═══════════════════════════════════════ */
+function togglePw() {
+    const inp = document.getElementById('inp-pw');
+    const eye = document.getElementById('pw-eye');
+    if (inp.type === 'password') { inp.type = 'text'; eye.textContent = 'visibility_off'; }
+    else { inp.type = 'password'; eye.textContent = 'visibility'; }
+}
+
+/* ═══════════════════════════════════════
+   CARD FLIP
+═══════════════════════════════════════ */
+function flipCard() {
+    document.getElementById('card-flip').classList.toggle('flipped');
+}
+
+/* ═══════════════════════════════════════
+   POPULATE UI
+═══════════════════════════════════════ */
+function populateUI(data) {
+    appData = data;
+    const initial = (data.name || 'A').charAt(0).toUpperCase();
+
+    // Name & ID
+    document.getElementById('ui-name').textContent         = data.name;
+    document.getElementById('ui-student-ref').textContent  = 'ID: ' + data.student_id;
+    document.getElementById('ui-pname').textContent        = data.name;
+    document.getElementById('ui-pid').textContent          = 'ID: ' + data.student_id;
+
+    // Avatars
+    ['ui-avatar','ui-av-fin','ui-av-acad','ui-pav'].forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.textContent = initial;
+    });
+
+    // Finance
+    const due = parseFloat(data.finance.total_due).toFixed(2);
+    document.getElementById('ui-due').textContent     = due;
+    document.getElementById('ui-fin-due').textContent = due;
+
+    const unpaid = data.finance.invoices.filter(i => i.status === 'unpaid').length;
+    const paid   = data.finance.invoices.filter(i => i.status !== 'unpaid').length;
+    document.getElementById('ui-unpaid-count').textContent = unpaid + ' Unpaid';
+    document.getElementById('ui-paid-count').textContent   = paid   + ' Paid';
+
+    // Academic
+    const att = data.academic.attendance_rate;
+    document.getElementById('ui-att').textContent     = att + '%';
+    document.getElementById('ui-present').textContent = data.academic.days_present;
+    document.getElementById('ui-absent').textContent  = data.academic.days_absent;
+
+    // Attendance ring animation
+    document.getElementById('att-ring-pct').textContent = att + '%';
+    const circ = 2 * Math.PI * 68; // r=68
+    const offset = circ * (1 - att / 100);
+    document.getElementById('att-ring-circle').style.strokeDashoffset = offset;
+
+    const latestGrade = data.academic.grades.length ? data.academic.grades[0].grade : '--';
+    document.getElementById('ui-grade').textContent = latestGrade;
+
+    // ID Card
+    document.getElementById('card-name').textContent      = data.name;
+    document.getElementById('card-class').textContent     = data.class_name || 'Kindergarten';
+    document.getElementById('card-id').textContent        = 'MIS-' + data.student_id;
+    document.getElementById('card-back-name').textContent = data.name;
+    document.getElementById('card-back-id').textContent   = 'MIS-' + data.student_id;
+
+    // Render invoices
+    renderInvoices(data.finance.invoices);
+    renderGrades(data.academic.grades);
+}
+
+/* ─── INVOICES ─── */
+function renderInvoices(invoices) {
+    const full = document.getElementById('invoices-list');
+    const preview = document.getElementById('home-invoices');
+    full.innerHTML = '';
+    preview.innerHTML = '';
+
+    invoices.forEach((inv, idx) => {
+        const isPaid = inv.status !== 'unpaid';
+        const amtClass = isPaid ? 'ok' : 'due';
+        const payBtn = !isPaid
+            ? `<button class="btn-pay" id="btn-${idx}" onclick="payInvoice('${inv.id}', ${idx})">
+                 <span class="mi" style="font-size:14px">payments</span>Pay
+               </button>`
+            : '';
+
+        const card = `
+        <div class="list-card">
+            <div class="lc-left">
+                <h4>${inv.title}</h4>
+                <p><span class="mi" style="font-size:14px">receipt</span>&nbsp;${inv.id}</p>
+                <p style="margin-top:4px"><span class="mi" style="font-size:14px">event</span>&nbsp;${inv.date}</p>
+            </div>
+            <div class="lc-right">
+                <div class="amount ${amtClass}">RM ${parseFloat(inv.amount).toFixed(2)}</div>
+                <span class="badge ${isPaid ? 'paid' : 'unpaid'}">${isPaid ? 'Paid' : 'Unpaid'}</span>
+                ${payBtn}
+            </div>
+        </div>`;
+
+        full.insertAdjacentHTML('beforeend', card);
+        if (idx < 3) preview.insertAdjacentHTML('beforeend', card);
+    });
+}
+
+/* ─── GRADES ─── */
+function renderGrades(grades) {
+    const el = document.getElementById('grades-list');
+    el.innerHTML = '';
+    grades.forEach(g => {
+        el.insertAdjacentHTML('beforeend', `
+        <div class="list-card">
+            <div class="lc-left">
+                <h4>${g.subject}</h4>
+                <p><span class="mi" style="font-size:14px">person</span>&nbsp;${g.teacher}</p>
+            </div>
+            <div class="lc-right">
+                <div class="amount" style="color:var(--p)">${g.score}</div>
+                <span class="badge paid">${g.grade}</span>
+            </div>
+        </div>`);
+    });
+}
+
+/* ═══════════════════════════════════════
+   PAY INVOICE
+═══════════════════════════════════════ */
+async function payInvoice(invoiceId, idx) {
+    if (!currentStudentId) { toast('Session expired. Please sign in again.', 'err'); return; }
+    const btn = document.getElementById('btn-' + idx);
+    if (!btn) return;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="mi" style="font-size:14px;animation:spin 0.7s linear infinite">progress_activity</span>Wait…';
+    try {
+        const res = await fetch(API_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'get_payment_link', student_id: currentStudentId, invoice_id: invoiceId })
+        });
+        const r = await res.json();
+        if (r.success) {
+            toast('Redirecting to payment gateway…', 'ok');
+            setTimeout(() => window.open(r.payment_url, '_blank'), 1200);
+            btn.innerHTML = '<span class="mi" style="font-size:14px">payments</span>Pay';
+            btn.disabled = false;
+        } else {
+            toast(r.message || 'Failed to generate payment link.', 'err');
+            btn.innerHTML = '<span class="mi" style="font-size:14px">payments</span>Pay';
+            btn.disabled = false;
+        }
+    } catch {
+        toast('Network error. Please try again.', 'err');
+        btn.innerHTML = '<span class="mi" style="font-size:14px">payments</span>Pay';
+        btn.disabled = false;
+    }
+}
+
+/* ═══════════════════════════════════════
+   SESSION (localStorage)
+═══════════════════════════════════════ */
+function saveSession(data) {
+    localStorage.setItem(STORE_KEY, JSON.stringify({
+        data,
+        expiry: Date.now() + EXPIRY_MS
+    }));
+}
+
+function loadSession() {
+    try {
+        const raw = localStorage.getItem(STORE_KEY);
+        if (!raw) return null;
+        const obj = JSON.parse(raw);
+        if (obj.expiry < Date.now()) { localStorage.removeItem(STORE_KEY); return null; }
+        return obj.data;
+    } catch { return null; }
+}
+
+function clearSession() {
+    localStorage.removeItem(STORE_KEY);
+}
+
+function enterApp(data) {
+    currentStudentId = data.student_id;
+    populateUI(data);
+    document.getElementById('bottom-nav').classList.add('visible');
+    goTo('s-home', 0);
+}
+
+function logout() {
+    clearSession();
+    currentStudentId = '';
+    appData = null;
+    document.getElementById('bottom-nav').classList.remove('visible');
+    document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
+    document.getElementById('s-login').classList.add('active');
+    toast('Signed out successfully.', 'ok');
+}
+
+/* ═══════════════════════════════════════
+   LOGIN FORM
+═══════════════════════════════════════ */
+document.getElementById('login-form').addEventListener('submit', async function(e) {
+    e.preventDefault();
+    const studentId = document.getElementById('inp-id').value.trim();
+    const password  = document.getElementById('inp-pw').value;
+    if (!studentId) { toast('Please enter your Student ID.', 'err'); return; }
+    if (!password)  { toast('Please enter your password.', 'err'); return; }
+
+    const btn = document.getElementById('btn-login');
+    btn.classList.add('loading');
+    btn.disabled = true;
+
+    try {
+        const res = await fetch(API_URL, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ action: 'login', student_id: studentId, password })
+        });
+        const r = await res.json();
+        if (r.success) {
+            saveSession(r.data);
+            enterApp(r.data);
+        } else {
+            toast(r.message || 'Login failed. Please try again.', 'err');
+            btn.classList.remove('loading');
+            btn.disabled = false;
+        }
+    } catch {
+        toast('Connection error. Check your internet.', 'err');
+        btn.classList.remove('loading');
+        btn.disabled = false;
+    }
+});
+
+/* ═══════════════════════════════════════
+   AUTO LOGIN ON STARTUP
+═══════════════════════════════════════ */
+(function init() {
+    const saved = loadSession();
+    if (saved) {
+        enterApp(saved);
+    }
+})();
+</script>
+</body>
+</html>
+```
+
+--- File: backend\config.php ---
+```
+
+```
+
+--- File: backend\index.php ---
+```
+
+```
+
+--- File: backend\controllers\AuthController.php ---
+```
+
+```
+
+--- File: backend\controllers\FinanceController.php ---
+```
+
+```
+
+--- File: backend\controllers\PaymentController.php ---
+```
+
+```
+
+--- File: backend\core\OdooClient.php ---
+```
+
+```
+
+--- File: frontend\index.html ---
+```
+
+```
+
+--- File: frontend\manifest.json ---
+```
+
+```
+
+--- File: frontend\sw.js ---
+```
+
+```
+
+--- File: frontend\css\components.css ---
+```
+
+```
+
+--- File: frontend\css\main.css ---
+```
+
+```
+
+--- File: frontend\css\screens.css ---
+```
+
+```
+
+--- File: frontend\js\api.js ---
+```
+
+```
+
+--- File: frontend\js\app.js ---
+```
+
+```
+
+--- File: frontend\js\auth.js ---
+```
+
+```
+
+--- File: frontend\js\ui.js ---
+```
+
+```
+
+--- File: frontend\js\screens\academic.js ---
+```
+
+```
+
+--- File: frontend\js\screens\finance.js ---
+```
+
+```
+
+--- File: frontend\js\screens\home.js ---
+```
+
+```
+
