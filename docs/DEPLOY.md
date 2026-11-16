@@ -1,9 +1,9 @@
 # النشر على سيرفر Contabo (بجانب Odoo)
 
-الفكرة: الخادم `backend/` يعمل على المنفذ **8070** داخل السيرفر فقط (127.0.0.1)، و nginx يعرضه على الإنترنت عبر HTTPS
+الفكرة: الخادم `backend/` يعمل على المنفذ **6975** داخل السيرفر فقط (127.0.0.1)، و nginx يعرضه على الإنترنت عبر HTTPS
 باسم نطاق فرعي مثل `api.marifah.edu.my`. الواجهة `frontend/` ملفات ثابتة (GitHub Pages للتجربة، ولاحقاً على السيرفر نفسه).
 
-> لماذا HTTPS ونطاق؟ صفحات GitHub Pages تعمل على HTTPS، والمتصفح يمنع منها الاتصال بـ `http://62.171.128.10:8070`
+> لماذا HTTPS ونطاق؟ صفحات GitHub Pages تعمل على HTTPS، والمتصفح يمنع منها الاتصال بـ `http://62.171.128.10:6975`
 > (Mixed Content). كذلك متجرا Google وApple يشترطان HTTPS. لذلك نحتاج سجل DNS: `api.marifah.edu.my → 62.171.128.10`.
 
 ## 1) تجهيز السيرفر (مرة واحدة)
@@ -44,7 +44,7 @@ sudo -u marifah npm run create-user -- --login MIS0529 --name "اسم الطال
 ```bash
 sudo cp deploy/marifah-api.service /etc/systemd/system/
 sudo systemctl daemon-reload && sudo systemctl enable --now marifah-api
-curl http://127.0.0.1:8070/api/health
+curl http://127.0.0.1:6975/api/health
 journalctl -u marifah-api -f
 ```
 
@@ -69,4 +69,6 @@ cd /opt/marifah-mobile-app && sudo -u marifah git pull && sudo systemctl restart
 ```
 
 ## المنافذ
-8070 = Marifah API. المنافذ 8071–8075 محجوزة لتطبيقاتك الأخرى (لم نستخدمها).
+6975 = Marifah API. المنافذ غيرها محجوزة لتطبيقاتك الأخرى (لم نستخدمها).
+
+> ملاحظة: المنفذ 8070 مشغول بخدمة Odoo (longpolling) على هذا السيرفر، لذلك يستخدم تطبيقنا **6975**.

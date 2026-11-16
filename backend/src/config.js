@@ -2,7 +2,7 @@ export function loadConfig(env = process.env) {
   const num = (v, d) => (v === undefined || v === '' ? d : Number(v));
   const cfg = {
     env: env.NODE_ENV || 'development',
-    port: num(env.PORT, 8070),
+    port: num(env.PORT, 6975),
     host: env.HOST || '127.0.0.1',
     jwtSecret: env.JWT_SECRET || '',
     jwtTtlSeconds: num(env.JWT_TTL_DAYS, 14) * 86400,
