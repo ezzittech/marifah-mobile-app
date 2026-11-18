@@ -76,3 +76,19 @@ cd /opt/marifah-mobile-app && sudo -u marifah git pull && sudo systemctl restart
 ## الطريقة المؤقتة على IP:المنفذ (بدون نطاق)
 `deploy/nginx-app.conf` يقدّم الواجهة والـ API معاً على المنفذ 6976: `http://62.171.128.10:6976/`
 (يجب فتح المنفذ 6976 في جدار الحماية). عند توفر نطاق نستبدله بـ HTTPS كما في الأقسام أعلاه.
+
+## مزامنة Fedena (نسخة محلية من بياناته)
+التطبيق لا يتصل بـ Fedena أثناء التصفح؛ يقرأ من قاعدتنا، وهذه تُحدَّث بمهمة مجدولة.
+```bash
+cd /opt/marifah-mobile-app && sudo -u marifah git pull && cd backend
+sudo -u marifah npm test
+sudo -u marifah npm run sync                 # أول مزامنة كاملة (قد تستغرق دقائق)
+sudo -u marifah npm run sync -- --status     # آخر التشغيلات + عدد السجلات
+sudo systemctl restart marifah-api           # لتحميل الشيفرة الجديدة
+
+# جدولة يومية:
+sudo cp ../deploy/marifah-sync.service ../deploy/marifah-sync.timer /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now marifah-sync.timer
+systemctl list-timers marifah-sync.timer
+journalctl -u marifah-sync -n 50 --no-pager
+```

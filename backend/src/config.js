@@ -16,7 +16,7 @@ export function loadConfig(env = process.env) {
       password: env.ODOO_PASS || '',
       publicUrl: (env.ODOO_PUBLIC_URL || '').replace(/\/$/, ''),
     },
-    fedena: { url: (env.FEDENA_URL || '').replace(/\/$/, ''), token: env.FEDENA_TOKEN || '' },
+    fedena: { url: (env.FEDENA_URL || '').replace(/\/$/, ''), token: env.FEDENA_TOKEN || '', delayMs: num(env.FEDENA_DELAY_MS, 150) },
   };
   if (cfg.jwtSecret.length < 32) {
     throw new Error('JWT_SECRET must be set to at least 32 characters (see .env.example)');

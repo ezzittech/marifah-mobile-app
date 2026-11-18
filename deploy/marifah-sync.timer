@@ -1,0 +1,11 @@
+[Unit]
+Description=Daily Fedena sync (more frequent timers for timetable/scores come later)
+
+[Timer]
+# server time; adjust if the server clock is UTC and you want a different local hour
+OnCalendar=*-*-* 02:30:00
+RandomizedDelaySec=5min
+Persistent=true
+
+[Install]
+WantedBy=timers.target

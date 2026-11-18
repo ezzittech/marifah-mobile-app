@@ -1,0 +1,15 @@
+[Unit]
+Description=Marifah - copy data from Fedena into the local database
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=marifah
+WorkingDirectory=/opt/marifah-mobile-app/backend
+ExecStart=/usr/bin/node --env-file=.env scripts/sync-fedena.js
+TimeoutStartSec=30min
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/opt/marifah-mobile-app/backend/data
+PrivateTmp=true

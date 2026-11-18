@@ -11,6 +11,7 @@
     "test": "node --test test/*.test.js",
     "create-user": "node --env-file=.env scripts/create-user.js",
     "import-students": "node --env-file=.env scripts/import-students.js",
+    "sync": "node --env-file=.env scripts/sync-fedena.js",
     "fedena-probe": "node --env-file=.env scripts/fedena-probe.js"
   }
 }
