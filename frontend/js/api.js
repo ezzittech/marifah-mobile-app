@@ -38,6 +38,7 @@ const real = {
   finance: () => request('/api/finance'),
   pay: (invoice_id) => request('/api/finance/pay', { method: 'POST', body: { invoice_id } }),
   academic: () => request('/api/academic'),
+  overview: () => request('/api/student/overview'),
   changePassword: (current_password, new_password) =>
     request('/api/auth/change-password', { method: 'POST', body: { current_password, new_password } }),
   setLang: (lang) => request('/api/me/lang', { method: 'POST', body: { lang } }),

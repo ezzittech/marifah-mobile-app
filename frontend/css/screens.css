@@ -39,7 +39,7 @@
 .idcard .school svg { width: 26px; height: 22px; }
 .idcard .chip { background: rgba(255, 255, 255, .16); color: #fff; backdrop-filter: blur(8px); }
 .idcard .name { font-size: 24px; font-weight: 800; letter-spacing: -.02em; margin-top: 26px; line-height: 1.15; }
-.idcard .sid { margin-top: 6px; font-weight: 600; opacity: .78; letter-spacing: .08em; font-size: 14px; }
+.idcard .sid { display: block; margin-top: 6px; font-weight: 600; opacity: .78; letter-spacing: .08em; font-size: 14px; }
 .idcard .foot { display: flex; justify-content: space-between; align-items: flex-end; margin-top: 22px; padding-top: 16px; border-top: 1px dashed rgba(255, 255, 255, .25); }
 .idcard .foot small { display: block; opacity: .7; font-size: 12px; font-weight: 600; }
 .idcard .foot b { font-size: 24px; font-weight: 800; letter-spacing: -.02em; }

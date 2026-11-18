@@ -2,7 +2,7 @@ export function loadConfig(env = process.env) {
   const num = (v, d) => (v === undefined || v === '' ? d : Number(v));
   const cfg = {
     env: env.NODE_ENV || 'development',
-    port: num(env.PORT, 8070),
+    port: num(env.PORT, 6975),
     host: env.HOST || '127.0.0.1',
     jwtSecret: env.JWT_SECRET || '',
     jwtTtlSeconds: num(env.JWT_TTL_DAYS, 14) * 86400,
@@ -16,7 +16,7 @@ export function loadConfig(env = process.env) {
       password: env.ODOO_PASS || '',
       publicUrl: (env.ODOO_PUBLIC_URL || '').replace(/\/$/, ''),
     },
-    fedena: { url: (env.FEDENA_URL || '').replace(/\/$/, ''), token: env.FEDENA_TOKEN || '' },
+    fedena: { url: (env.FEDENA_URL || '').replace(/\/$/, ''), token: env.FEDENA_TOKEN || '', delayMs: num(env.FEDENA_DELAY_MS, 150) },
   };
   if (cfg.jwtSecret.length < 32) {
     throw new Error('JWT_SECRET must be set to at least 32 characters (see .env.example)');

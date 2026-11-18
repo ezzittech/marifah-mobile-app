@@ -48,6 +48,16 @@ export const api = {
       },
     };
   },
+  async overview() {
+    await wait();
+    const teachers = { ENG: 'Omnia Fadel', ARL: 'Hana Saleh', MATH: 'Khalid Nasser', BIO: 'Sara Omar', CHEM: 'Ali Hassan', PHY: 'Yahya Ahmed', HQ: 'Ibrahim Yusuf', ISC: 'Ibrahim Yusuf', ICT: 'Mariam Adel', GEO: 'Noor Fahd' };
+    return {
+      success: true, available: true, student: { name: user.name, admission_no: user.login },
+      batch: { course_code: 'G11', name: 'A2 26/27', full_name: 'G11 - A2 26/27', start_date: '2026-07-25', end_date: '2027-06-30' },
+      subjects: SUBJ.map(([subject, code]) => ({ code, name: subject, weekly_classes: 3 + (code.length % 4), graded: true, elective: false, teachers: [{ name: teachers[code], department: '' }] })),
+      grading_levels: [], updated_at: new Date().toISOString(),
+    };
+  },
   async changePassword() { await wait(500); return { success: true, token: 'demo' }; },
   async setLang() { return { success: true }; },
 };

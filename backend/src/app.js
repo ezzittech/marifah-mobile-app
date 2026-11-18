@@ -3,6 +3,7 @@ import { verifyJwt } from './security.js';
 import { registerAuthRoutes } from './routes/auth.js';
 import { registerFinanceRoutes } from './routes/finance.js';
 import { registerAcademicRoutes } from './routes/academic.js';
+import { registerStudentRoutes } from './routes/student.js';
 
 /** Builds the HTTP server. db/odoo are injected so tests can use fakes. */
 export function createApp({ config, db, odoo, log }) {
@@ -12,6 +13,7 @@ export function createApp({ config, db, odoo, log }) {
   registerAuthRoutes({ router, db, config });
   registerFinanceRoutes({ router, db, config, odoo });
   registerAcademicRoutes({ router });
+  registerStudentRoutes({ router, db });
 
   const authenticate = (req) => {
     const h = req.headers.authorization || '';

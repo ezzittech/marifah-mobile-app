@@ -31,6 +31,76 @@ CREATE TABLE IF NOT EXISTS parent_students (
   PRIMARY KEY (parent_user_id, student_user_id)
 );
 
+-- ───────── Fedena mirror (read-only copy, refreshed by scripts/sync-fedena.js) ─────────
+CREATE TABLE IF NOT EXISTS fedena_batches (
+  batch_key TEXT PRIMARY KEY,               -- 'G11|A2 26/27'
+  course_code TEXT NOT NULL,
+  name TEXT NOT NULL,
+  full_name TEXT NOT NULL,                  -- 'G11 - A2 26/27'
+  start_date TEXT,
+  end_date TEXT,
+  active INTEGER NOT NULL DEFAULT 1,
+  synced_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS fedena_students (
+  admission_no TEXT PRIMARY KEY COLLATE NOCASE,
+  name TEXT,
+  batch_key TEXT,
+  batch_full_name TEXT,
+  active INTEGER NOT NULL DEFAULT 1,
+  synced_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS fedena_subjects (
+  batch_key TEXT NOT NULL,
+  code TEXT NOT NULL,
+  name TEXT NOT NULL,
+  no_exams INTEGER NOT NULL DEFAULT 0,
+  max_weekly_classes INTEGER,
+  elective_group TEXT,
+  is_floating_elective INTEGER NOT NULL DEFAULT 0,
+  assigned_students TEXT NOT NULL DEFAULT '[]',  -- JSON list; empty = whole batch
+  employee_numbers TEXT NOT NULL DEFAULT '[]',   -- JSON list (lower-case)
+  active INTEGER NOT NULL DEFAULT 1,
+  synced_at TEXT NOT NULL,
+  PRIMARY KEY (batch_key, code)
+);
+
+-- Only what the app needs. Date of birth, address, phone and photo are deliberately NOT copied.
+CREATE TABLE IF NOT EXISTS fedena_employees (
+  employee_number TEXT PRIMARY KEY COLLATE NOCASE,
+  name TEXT,
+  department TEXT,
+  category TEXT,
+  position TEXT,
+  email TEXT,
+  status INTEGER,
+  active INTEGER NOT NULL DEFAULT 1,
+  synced_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS fedena_grading_levels (
+  scope TEXT NOT NULL,                      -- '' = global, otherwise the batch it applies to
+  name TEXT NOT NULL,
+  min_score REAL NOT NULL,
+  credit_points REAL,
+  description TEXT,
+  active INTEGER NOT NULL DEFAULT 1,
+  synced_at TEXT NOT NULL,
+  PRIMARY KEY (scope, name)
+);
+
+CREATE TABLE IF NOT EXISTS sync_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  entity TEXT NOT NULL,
+  started_at TEXT NOT NULL,
+  finished_at TEXT,
+  status TEXT NOT NULL DEFAULT 'running',   -- running | ok | error
+  item_count INTEGER,
+  message TEXT
+);
+
 CREATE TABLE IF NOT EXISTS audit_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   ts TEXT NOT NULL DEFAULT (datetime('now')),

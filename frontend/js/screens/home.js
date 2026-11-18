@@ -17,7 +17,7 @@ export function render(root, ctx) {
       langBtn),
     content);
 
-  const state = { fin: null, acad: null };
+  const state = { fin: null, acad: null, ov: null };
 
   function idCard() {
     const due = state.fin ? state.fin.total_due : null;
@@ -29,6 +29,7 @@ export function render(root, ctx) {
         h('span', { class: 'chip' }, t(`role.${u.role}`))),
       h('div', { class: 'name' }, u.name),
       h('div', { class: 'sid num' }, `${t('home.studentId')} · ${u.login}`),
+      state.ov?.batch && h('div', { class: 'sid num', style: { marginTop: '2px' } }, state.ov.batch.full_name),
       u.has_finance && h('div', { class: 'foot' },
         h('div', {}, h('small', {}, t('home.balance')), amount),
         due > 0
@@ -53,14 +54,16 @@ export function render(root, ctx) {
     const avg = ring({ value: s.average, size: 96, stroke: 10, color: scoreColor(s.average), label: '' });
     avg.mid.firstChild.replaceChildren(avgNum);
     countUp(avgNum, s.average, { decimals: 1 });
-    return h('div', { class: 'stats rise', style: { marginTop: '18px', '--i': 3 } },
-      h('div', { class: 'card stat' }, att.el, h('b', {}, t('home.attendance'))),
-      h('div', { class: 'card stat' }, avg.el, h('b', {}, t('home.average'))));
+    const demo = state.acad?.demo ? h('span', { class: 'chip warn', style: { marginInline: '2px 0', justifySelf: 'start' } }, t('home.preview')) : null;
+    return h('div', { class: 'rise', style: { marginTop: '18px', '--i': 3 } }, demo && h('div', { style: { marginBottom: '8px' } }, demo),
+      h('div', { class: 'stats' },
+        h('div', { class: 'card stat' }, att.el, h('b', {}, t('home.attendance'))),
+        h('div', { class: 'card stat' }, avg.el, h('b', {}, t('home.average')))));
   }
 
   function today() {
     const a = state.acad;
-    const head = h('div', { class: 'section-title' }, h('h2', {}, t('home.today')), h('button', { onclick: () => ctx.go('#/academic?tab=timetable') }, t('home.timetable')));
+    const head = h('div', { class: 'section-title' }, h('h2', {}, t('home.today'), a?.demo && h('span', { class: 'chip warn', style: { marginInlineStart: '8px', verticalAlign: 'middle' } }, t('home.preview'))), h('button', { onclick: () => ctx.go('#/academic?tab=timetable') }, t('home.timetable')));
     if (!a) return h('div', {}, head, h('div', { class: 'card' }, sk('70%'), h('div', { style: { height: '10px' } }), sk('50%')));
     const list = a.timetable[todayKey()] || [];
     return h('div', { class: 'rise', style: { '--i': 4 } }, head,
@@ -70,6 +73,18 @@ export function render(root, ctx) {
   }
 
   function subjects() {
+    const ov = state.ov;
+    if (ov?.available && ov.subjects.length) {
+      return h('div', { class: 'rise', style: { '--i': 5 } },
+        h('div', { class: 'section-title' }, h('h2', {}, t('home.mySubjects')), h('span', { class: 'chip ok' }, icon('check'), t('home.live'))),
+        h('div', { class: 'stack' }, ov.subjects.map((sub) =>
+          h('div', { class: 'card tight', style: { display: 'flex', gap: '12px', alignItems: 'center' } },
+            h('span', { class: 'q-ic', style: { width: '40px', height: '40px', borderRadius: '14px', display: 'grid', placeItems: 'center', background: 'var(--p-soft)', color: 'var(--p)', fontWeight: 800, fontSize: '12px', flex: 'none' } }, sub.code),
+            h('div', { style: { flex: 1, minWidth: 0 } },
+              h('b', { style: { display: 'block', fontSize: '14.5px' } }, subjectName(sub.name)),
+              h('small', { class: 'muted', style: { fontWeight: 600 } }, sub.teachers.map((x) => x.name).join(' · ') || '—')),
+            sub.weekly_classes && h('span', { class: 'chip mute num' }, t('home.perWeek', { n: sub.weekly_classes }))))));
+    }
     const a = state.acad;
     if (!a) return h('div');
     return h('div', { class: 'rise', style: { '--i': 5 } },
@@ -91,5 +106,6 @@ export function render(root, ctx) {
   paint();
   const jobs = [];
   if (u.has_finance) jobs.push(swr('finance', api.finance, (d) => { state.fin = d; paint(); }).catch(() => {}));
+  if (u.role === 'student') jobs.push(swr('overview', api.overview, (d) => { state.ov = d; paint(); }).catch(() => {}));
   if (['student', 'parent', 'admin'].includes(u.role)) jobs.push(swr('academic', api.academic, (d) => { state.acad = d; paint(); }).catch(() => {}));
 }
